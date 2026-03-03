@@ -1,0 +1,23 @@
+# Sample CODEOWNERS file for testing
+
+# Python files
+*.py @python-team
+
+# Documentation
+docs/* @docs-team
+*.md @docs-team
+
+# Frontend files
+/src/components/ @frontend-team
+static/**/*.tsx @frontend-team
+static/**/*.jsx @frontend-team
+
+# Tests
+**/tests/*.py @qa-team
+
+# Config files at root only
+/.github/ @infra-team
+/pyproject.toml @infra-team
+
+# Specific file
+/README.md @leadership-team

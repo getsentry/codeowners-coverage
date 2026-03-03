@@ -1,0 +1,4 @@
+
+dist
+src/codeowners_coverage.egg-info
+src/codeowners_coverage/__pycache__

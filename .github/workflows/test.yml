@@ -1,0 +1,43 @@
+name: Test Package
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'packages/codeowners-coverage/**'
+  pull_request:
+    paths:
+      - 'packages/codeowners-coverage/**'
+
+defaults:
+  run:
+    working-directory: packages/codeowners-coverage
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest tests/ -v --cov=src/codeowners_coverage --cov-report=term-missing
+
+      - name: Run type checking
+        run: mypy src/
+
+      - name: Run linting
+        run: ruff check src/
