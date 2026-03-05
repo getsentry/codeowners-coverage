@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import List, Tuple
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, cast
 
 import click
 
 from .checker import CoverageChecker
 from .config import Config
+from .directory_consolidator import DirectoryConsolidator
+from .git_analyzer import GitHistoryAnalyzer
+from .github_client import GitHubClient
+from .matcher import CodeOwnersPatternMatcher
+from .ollama_matcher import OllamaLLMMatcher, TeamSuggestion
+from .suggest_cache import SuggestCache
+from .suggester import OwnershipSuggester, SuggestionResult
 
 
 @click.group()
@@ -49,7 +58,7 @@ def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
 
         # Exit with code 2 if baseline can be reduced (positive signal)
         # Check if any baseline files are now covered
-        baseline_set = set(result["baseline_files"])
+        baseline_set = set(cast(List[str], result["baseline_files"]))
         current_uncovered = checker.generate_baseline(file_list)
         current_uncovered_set = set(current_uncovered)
 
@@ -98,7 +107,7 @@ def baseline(config: str, files: Tuple[str, ...]) -> None:
         click.echo(f"📊 {len(baseline_files)} uncovered files in baseline")
 
         if baseline_files:
-            click.echo(f"\n💡 Goal: Reduce this list to zero by adding CODEOWNERS coverage")
+            click.echo("\n💡 Goal: Reduce this list to zero by adding CODEOWNERS coverage")
 
     except FileNotFoundError as e:
         click.echo(f"❌ Error: {e}", err=True)
@@ -108,7 +117,388 @@ def baseline(config: str, files: Tuple[str, ...]) -> None:
         sys.exit(1)
 
 
-def _print_human_readable_result(result: dict) -> None:
+@cli.command()
+@click.option(
+    "--validate/--no-validate", default=True,
+    help="Validate teams via GitHub API",
+)
+@click.option(
+    "--min-coverage", default=0.8, type=float,
+    help="Min coverage for directory consolidation",
+)
+@click.option(
+    "--github-token", envvar="GITHUB_TOKEN",
+    help="GitHub Personal Access Token (needs read:org scope)",
+)
+@click.option("--org", help="GitHub organization (auto-detected if not provided)")
+@click.option("--apply", is_flag=True, help="Auto-apply suggestions to CODEOWNERS")
+@click.option(
+    "--format", "output_format",
+    type=click.Choice(["interactive", "json", "diff"]),
+    default="interactive", help="Output format",
+)
+@click.option("--ollama-model", default="llama3.2", help="Ollama model to use")
+@click.option(
+    "--ollama-url", default="http://localhost:11434",
+    help="Ollama API endpoint",
+)
+@click.option(
+    "--lookback", default=100, type=int,
+    help="Number of commits to analyze",
+)
+@click.option(
+    "--include-baseline/--no-baseline", default=True,
+    help="Include baseline files in suggestions",
+)
+@click.option(
+    "--config", default=".codeowners-config.yml",
+    help="Config file path",
+)
+@click.option(
+    "--cache-file", default=None,
+    help="Cache file path (default: from config or "
+    ".codeowners-suggest-cache.json)",
+)
+@click.option(
+    "--no-cache", is_flag=True,
+    help="Disable caching (fresh run)",
+)
+@click.option(
+    "--clear-cache", is_flag=True,
+    help="Delete existing cache before starting",
+)
+def suggest(
+    validate: bool,
+    min_coverage: float,
+    github_token: str | None,
+    org: str | None,
+    apply: bool,
+    output_format: str,
+    ollama_model: str,
+    ollama_url: str,
+    lookback: int,
+    include_baseline: bool,
+    config: str,
+    cache_file: str | None,
+    no_cache: bool,
+    clear_cache: bool,
+) -> None:
+    """
+    Suggest CODEOWNERS entries for uncovered files using AI.
+
+    Uses git history and local LLM (Ollama) to intelligently
+    suggest team ownership. Results are cached incrementally so
+    the command can be interrupted and restarted safely.
+
+    By default, includes both new uncovered files AND baseline
+    files. Use --no-baseline to only suggest for new uncovered
+    files.
+
+    Requires Ollama to be installed and running.
+    """
+    try:
+        # Load config
+        cfg = Config.load(config)
+
+        # Override with CLI options
+        cfg.github_token = github_token or cfg.github_token
+        cfg.github_org = org or cfg.github_org
+        cfg.suggestion_min_coverage = min_coverage
+        cfg.ollama_model = ollama_model
+        cfg.ollama_base_url = ollama_url
+        cfg.suggestion_lookback_commits = lookback
+
+        # Get uncovered files
+        checker = CoverageChecker(cfg)
+        result = checker.check_coverage()
+        new_uncovered = cast(List[str], result["uncovered_files"])
+        baseline_files = cast(List[str], result["baseline_files"])
+
+        # Combine based on include_baseline flag
+        if include_baseline:
+            all_uncovered_files = new_uncovered + baseline_files
+        else:
+            all_uncovered_files = new_uncovered
+
+        if not all_uncovered_files:
+            click.echo("✅ All files have CODEOWNERS coverage!")
+            sys.exit(0)
+
+        click.echo(
+            f"🔍 Found {len(all_uncovered_files)} uncovered files"
+        )
+        if new_uncovered:
+            click.echo(
+                f"   • {len(new_uncovered)} new uncovered files"
+            )
+        if baseline_files and include_baseline:
+            click.echo(
+                f"   • {len(baseline_files)} baseline files (included)"
+            )
+        elif baseline_files and not include_baseline:
+            click.echo(
+                f"   • {len(baseline_files)} baseline files (excluded)"
+            )
+
+        # Set up cache
+        cache = _setup_cache(
+            cfg, cache_file, no_cache, clear_cache,
+            ollama_model, lookback, all_uncovered_files,
+        )
+
+        click.echo(
+            "📊 Analyzing git history and team membership..."
+        )
+
+        # Initialize components
+        git_analyzer = GitHistoryAnalyzer(
+            lookback_commits=cfg.suggestion_lookback_commits
+        )
+
+        github_client = None
+        if validate:
+            if not cfg.github_token:
+                click.echo(
+                    "⚠️  GitHub Personal Access Token "
+                    "not provided.",
+                    err=True,
+                )
+                click.echo(
+                    "   Create one at "
+                    "https://github.com/settings/tokens "
+                    "with 'read:org' scope.",
+                    err=True,
+                )
+                click.echo(
+                    "   Set via GITHUB_TOKEN env var "
+                    "or --github-token flag.",
+                    err=True,
+                )
+                click.echo(
+                    "   Running without team validation "
+                    "(degraded mode)."
+                )
+            else:
+                try:
+                    github_client = GitHubClient(
+                        token=cfg.github_token,
+                        org=cfg.github_org,
+                    )
+                    click.echo(
+                        f"✓ Connected to GitHub "
+                        f"(org: {github_client.org})"
+                    )
+                except Exception as e:
+                    click.echo(
+                        f"⚠️  GitHub connection failed: {e}",
+                        err=True,
+                    )
+                    click.echo(
+                        "   Running without team validation "
+                        "(degraded mode)."
+                    )
+
+        try:
+            llm_matcher = OllamaLLMMatcher(
+                model=cfg.ollama_model,
+                base_url=cfg.ollama_base_url,
+            )
+            click.echo(
+                f"✓ Connected to Ollama "
+                f"(model: {cfg.ollama_model})"
+            )
+        except Exception as e:
+            click.echo(
+                f"❌ Failed to connect to Ollama: {e}",
+                err=True,
+            )
+            click.echo(
+                "   Is Ollama running? "
+                "Check: http://localhost:11434"
+            )
+            sys.exit(1)
+
+        consolidator = DirectoryConsolidator(
+            min_coverage=cfg.suggestion_min_coverage
+        )
+
+        # Try to load existing CODEOWNERS for context
+        matcher = None
+        try:
+            matcher = CodeOwnersPatternMatcher(
+                cfg.codeowners_path
+            )
+        except FileNotFoundError:
+            click.echo("⚠️  No existing CODEOWNERS file found")
+
+        # Create suggester
+        suggester = OwnershipSuggester(
+            config=cfg,
+            git_analyzer=git_analyzer,
+            github_client=github_client,
+            llm_matcher=llm_matcher,
+            consolidator=consolidator,
+            matcher=matcher,
+            cache=cache,
+        )
+
+        # Generate suggestions
+        click.echo("\n🤖 Generating suggestions with AI...")
+        suggestions = suggester.suggest_for_uncovered_files(
+            all_uncovered_files,
+            progress_callback=_suggest_progress,
+        )
+
+        # Output results
+        if output_format == "json":
+            _print_suggestions_json(suggestions)
+        elif output_format == "diff":
+            _print_suggestions_diff(suggestions)
+        else:
+            _print_suggestions_interactive(suggestions)
+
+        # Apply if requested
+        if apply:
+            _apply_suggestions(cfg, suggestions)
+
+    except FileNotFoundError as e:
+        click.echo(f"❌ Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {e}", err=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def _setup_cache(
+    cfg: Config,
+    cache_file: str | None,
+    no_cache: bool,
+    clear_cache: bool,
+    ollama_model: str,
+    lookback: int,
+    files: List[str],
+) -> SuggestCache | None:
+    """Load or initialize the suggest cache."""
+    if no_cache:
+        click.echo("   Cache: disabled (--no-cache)")
+        return None
+
+    cache_path = cache_file or cfg.suggest_cache_path
+
+    if clear_cache:
+        p = Path(cache_path)
+        if p.exists():
+            p.unlink()
+            click.echo(f"   Cache: cleared {cache_path}")
+        else:
+            click.echo("   Cache: nothing to clear")
+
+    cache = SuggestCache.load(cache_path)
+
+    messages = cache.invalidate_if_params_changed(
+        ollama_model, lookback
+    )
+    for msg in messages:
+        click.echo(f"   ⚠️  {msg}")
+
+    cached = cache.count_cached_suggestions(files)
+    remaining = len(files) - cached
+    if cached > 0:
+        click.echo(
+            f"   Cache: {cached}/{len(files)} files already "
+            f"processed, {remaining} remaining"
+        )
+    else:
+        click.echo(f"   Cache: {cache_path} (empty or new)")
+
+    return cache
+
+
+def _suggest_progress(
+    current: int,
+    total: int,
+    filepath: str,
+    suggestion: TeamSuggestion,
+) -> None:
+    """Print progress for each LLM suggestion."""
+    conf = f"{suggestion.confidence:.2f}"
+    click.echo(
+        f"   [{current}/{total}] {filepath} "
+        f"-> {suggestion.team} ({conf})"
+    )
+
+
+def _print_suggestions_interactive(suggestions: SuggestionResult) -> None:
+    """Print suggestions in interactive format."""
+    click.echo(f"\n📋 Generated {len(suggestions.patterns)} suggested patterns:")
+    click.echo(f"   ({suggestions.files_with_suggestions}/{suggestions.total_files} files have confident suggestions)\n")
+
+    for pattern in suggestions.patterns:
+        teams_str = " ".join(pattern.teams)
+        confidence_pct = pattern.confidence * 100
+        click.echo(f"  {pattern.pattern:<50} {teams_str}")
+        click.echo(f"    ↳ {pattern.file_count} files, {confidence_pct:.0f}% confidence\n")
+
+
+def _print_suggestions_json(suggestions: SuggestionResult) -> None:
+    """Print suggestions as JSON."""
+    output = {
+        "patterns": [
+            {
+                "pattern": p.pattern,
+                "teams": p.teams,
+                "file_count": p.file_count,
+                "confidence": p.confidence,
+            }
+            for p in suggestions.patterns
+        ],
+        "total_files": suggestions.total_files,
+        "files_with_suggestions": suggestions.files_with_suggestions,
+    }
+    click.echo(json.dumps(output, indent=2))
+
+
+def _print_suggestions_diff(suggestions: SuggestionResult) -> None:
+    """Print suggestions as diff format."""
+    click.echo("# Suggested CODEOWNERS entries")
+    click.echo("# Generated by codeowners-coverage suggest")
+    click.echo(f"# Date: {datetime.now().isoformat()}\n")
+
+    for pattern in suggestions.patterns:
+        teams_str = " ".join(pattern.teams)
+        confidence_pct = pattern.confidence * 100
+        click.echo(f"# {pattern.file_count} files, {confidence_pct:.0f}% confidence")
+        click.echo(f"{pattern.pattern} {teams_str}\n")
+
+
+def _apply_suggestions(cfg: Config, suggestions: SuggestionResult) -> None:
+    """Apply suggestions to CODEOWNERS file."""
+    codeowners_path = Path(cfg.codeowners_path)
+
+    # Create backup
+    if codeowners_path.exists():
+        backup_path = f"{cfg.codeowners_path}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        import shutil
+        shutil.copy(codeowners_path, backup_path)
+        click.echo(f"\n💾 Backup created: {backup_path}")
+
+    # Append suggestions
+    with open(codeowners_path, "a") as f:
+        f.write("\n# AI-generated suggestions\n")
+        f.write(f"# Generated by codeowners-coverage suggest on {datetime.now().isoformat()}\n\n")
+
+        for pattern in suggestions.patterns:
+            teams_str = " ".join(pattern.teams)
+            confidence_pct = pattern.confidence * 100
+            f.write(f"# {pattern.file_count} files, {confidence_pct:.0f}% confidence\n")
+            f.write(f"{pattern.pattern} {teams_str}\n\n")
+
+    click.echo(f"✅ Suggestions applied to {cfg.codeowners_path}")
+
+
+def _print_human_readable_result(result: Dict[str, Any]) -> None:
     """Print coverage check result in human-readable format."""
     total = result["total_files"]
     covered = result["covered_files"]

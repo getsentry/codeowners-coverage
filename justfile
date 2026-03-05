@@ -10,23 +10,23 @@ install:
 
 # Run all tests
 test:
-    pytest tests/ -v
+    uv run pytest tests/ -v
 
 # Run tests with coverage report
 test-cov:
-    pytest tests/ -v --cov=src/codeowners_coverage --cov-report=term-missing --cov-report=html
+    uv run pytest tests/ -v --cov=src/codeowners_coverage --cov-report=term-missing --cov-report=html
 
 # Run type checking
 typecheck:
-    mypy src/
+    uv run mypy src/
 
 # Run linting
 lint:
-    ruff check src/ tests/
+    uv run ruff check src/ tests/
 
 # Fix linting issues automatically
 lint-fix:
-    ruff check --fix src/ tests/
+    uv run ruff check --fix src/ tests/
 
 # Run all checks (tests, typecheck, lint)
 check: test typecheck lint
@@ -43,12 +43,8 @@ clean:
     find . -type d -name __pycache__ -exec rm -rf {} +
     find . -type f -name "*.pyc" -delete
 
-# Build the package
-build: clean
-    python -m build
-
 # Build the package using uv (faster)
-build-uv: clean
+build: clean
     uv build
 
 # Publish to Test PyPI
@@ -88,7 +84,7 @@ bump-major:
 
 # Format code
 format:
-    ruff format src/ tests/
+    uv run ruff format src/ tests/
 
 # Run the CLI locally (check command)
 run-check:
@@ -109,3 +105,27 @@ release: check build publish
 # Test release workflow (test, build, publish to test PyPI)
 release-test: check build publish-test
     @echo "✅ Package published to Test PyPI successfully!"
+
+# Check Ollama installation and setup
+ollama-check:
+    @echo "Checking Ollama installation..."
+    @command -v ollama >/dev/null 2>&1 || (echo "❌ Ollama not installed. Visit https://ollama.ai/" && exit 1)
+    @echo "✓ Ollama installed"
+    @curl -s http://localhost:11434 >/dev/null 2>&1 || (echo "❌ Ollama not running. Start with: ollama serve" && exit 1)
+    @echo "✓ Ollama running"
+    @ollama list | grep -q llama3.2 || (echo "⚠️  llama3.2 not found. Pull with: ollama pull llama3.2" && exit 1)
+    @echo "✓ llama3.2 model available"
+    @echo "✅ Ollama ready for use"
+
+# Setup Ollama for codeowners-coverage
+ollama-setup:
+    @echo "Setting up Ollama for codeowners-coverage..."
+    @command -v ollama >/dev/null 2>&1 || (echo "Please install Ollama from https://ollama.ai/" && exit 1)
+    @echo "Pulling llama3.2 model (this may take a few minutes)..."
+    ollama pull llama3.2
+    @echo "✅ Ollama setup complete"
+
+# Run the suggest command (requires Ollama)
+suggest: ollama-check
+    @echo "Running CODEOWNERS suggestions..."
+    codeowners-coverage suggest
