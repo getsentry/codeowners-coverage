@@ -124,6 +124,18 @@ class CodeOwnersPatternMatcher:
 
         return pattern_owners
 
+    def get_all_teams(self) -> List[str]:
+        """
+        Get deduplicated, sorted list of all team/owner names used in CODEOWNERS.
+
+        Returns:
+            Sorted list of unique owner identifiers (e.g. @team-name)
+        """
+        teams: set[str] = set()
+        for owners in self.pattern_owners.values():
+            teams.update(owners)
+        return sorted(teams)
+
     def get_owners_for_file(self, filepath: str) -> List[str] | None:
         """
         Get owners for a specific file.

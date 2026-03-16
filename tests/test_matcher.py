@@ -156,6 +156,36 @@ def test_empty_codeowners_file() -> None:
     Path(temp_path).unlink()
 
 
+def test_get_all_teams(sample_codeowners: Path) -> None:
+    """Test extracting all unique teams from CODEOWNERS."""
+    matcher = CodeOwnersPatternMatcher(str(sample_codeowners))
+
+    teams = matcher.get_all_teams()
+
+    assert isinstance(teams, list)
+    assert teams == sorted(teams)
+    assert "@python-team" in teams
+    assert "@docs-team" in teams
+    assert "@frontend-team" in teams
+    assert "@qa-team" in teams
+    assert "@infra-team" in teams
+    assert "@leadership-team" in teams
+    # No duplicates
+    assert len(teams) == len(set(teams))
+
+
+def test_get_all_teams_empty_file() -> None:
+    """Test get_all_teams on an empty CODEOWNERS file."""
+    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+        f.write("")
+        temp_path = f.name
+
+    matcher = CodeOwnersPatternMatcher(temp_path)
+    assert matcher.get_all_teams() == []
+
+    Path(temp_path).unlink()
+
+
 def test_codeowners_with_only_comments() -> None:
     """Test CODEOWNERS file with only comments."""
     content = """# This is a comment

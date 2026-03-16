@@ -72,6 +72,7 @@ class SuggestCache:
                 team=suggestion["team"],
                 confidence=suggestion["confidence"],
                 reasoning=suggestion["reasoning"],
+                suggested_pattern=suggestion.get("suggested_pattern"),
             )
 
         return cls(
@@ -100,6 +101,7 @@ class SuggestCache:
                     "team": s.team,
                     "confidence": s.confidence,
                     "reasoning": s.reasoning,
+                    "suggested_pattern": s.suggested_pattern,
                 }
                 for fp, s in self.llm_suggestions.items()
             },

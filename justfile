@@ -64,23 +64,43 @@ publish: build
 install-test:
     pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ codeowners-coverage
 
-# Bump version (patch)
-bump-patch:
-    @echo "Current version: $(grep '^version' pyproject.toml | cut -d'"' -f2)"
-    @echo "Bumping patch version..."
-    # This is a placeholder - consider using bump2version or similar tool
+# Bump version helper — updates pyproject.toml and __init__.py
+[private]
+bump part:
+    #!/usr/bin/env -S uv run python3
+    import re, pathlib
+    pyproject = pathlib.Path("pyproject.toml")
+    init = pathlib.Path("src/codeowners_coverage/__init__.py")
+    match = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', pyproject.read_text(), re.M)
+    if not match:
+        raise SystemExit("Could not find version in pyproject.toml")
+    major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    old = f"{major}.{minor}.{patch}"
+    part = "{{ part }}"
+    if part == "patch":
+        patch += 1
+    elif part == "minor":
+        minor += 1
+        patch = 0
+    elif part == "major":
+        major += 1
+        minor = 0
+        patch = 0
+    else:
+        raise SystemExit(f"Unknown part: {part}")
+    new = f"{major}.{minor}.{patch}"
+    pyproject.write_text(re.sub(r'^(version\s*=\s*)"[^"]+"', rf'\1"{new}"', pyproject.read_text(), count=1, flags=re.M))
+    init.write_text(re.sub(r'^(__version__\s*=\s*)"[^"]+"', rf'\1"{new}"', init.read_text(), count=1, flags=re.M))
+    print(f"Bumped version: {old} → {new}")
 
-# Bump version (minor)
-bump-minor:
-    @echo "Current version: $(grep '^version' pyproject.toml | cut -d'"' -f2)"
-    @echo "Bumping minor version..."
-    # This is a placeholder - consider using bump2version or similar tool
+# Bump version (patch): 0.1.0 → 0.1.1
+bump-patch: (bump "patch")
 
-# Bump version (major)
-bump-major:
-    @echo "Current version: $(grep '^version' pyproject.toml | cut -d'"' -f2)"
-    @echo "Bumping major version..."
-    # This is a placeholder - consider using bump2version or similar tool
+# Bump version (minor): 0.1.0 → 0.2.0
+bump-minor: (bump "minor")
+
+# Bump version (major): 0.1.0 → 1.0.0
+bump-major: (bump "major")
 
 # Format code
 format:

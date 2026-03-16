@@ -88,6 +88,49 @@ def test_load_empty_yaml() -> None:
     Path(temp_config).unlink()
 
 
+def test_default_team_allowlist_is_none() -> None:
+    """Test that team_allowlist defaults to None."""
+    config = Config()
+    assert config.team_allowlist is None
+
+
+def test_load_team_allowlist_from_yaml() -> None:
+    """Test loading team_allowlist from YAML config."""
+    yaml_content = """
+team_allowlist:
+  - "@getsentry/owners-snuba"
+  - "@getsentry/alerts-notifications"
+  - "@getsentry/owners-frontend"
+"""
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".yml") as f:
+        f.write(yaml_content)
+        temp_config = f.name
+
+    config = Config.load(temp_config)
+
+    assert config.team_allowlist is not None
+    assert len(config.team_allowlist) == 3
+    assert "@getsentry/owners-snuba" in config.team_allowlist
+    assert "@getsentry/alerts-notifications" in config.team_allowlist
+
+    Path(temp_config).unlink()
+
+
+def test_missing_team_allowlist_in_yaml() -> None:
+    """Test that missing team_allowlist in YAML results in None."""
+    yaml_content = """
+codeowners_path: "custom/CODEOWNERS"
+"""
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".yml") as f:
+        f.write(yaml_content)
+        temp_config = f.name
+
+    config = Config.load(temp_config)
+    assert config.team_allowlist is None
+
+    Path(temp_config).unlink()
+
+
 def test_default_exclusions() -> None:
     """Test that default exclusions include common patterns."""
     exclusions = Config.default_exclusions()

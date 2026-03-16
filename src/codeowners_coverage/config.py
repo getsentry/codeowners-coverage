@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 
@@ -25,6 +25,7 @@ class Config:
     ollama_base_url: str = "http://localhost:11434"
     suggestion_lookback_commits: int = 100
     suggest_cache_path: str = ".codeowners-suggest-cache.json"
+    team_allowlist: Optional[List[str]] = None
 
     @classmethod
     def load(cls, config_path: str = ".codeowners-config.yml") -> Config:
@@ -60,6 +61,7 @@ class Config:
             suggest_cache_path=data.get(
                 "suggest_cache_path", ".codeowners-suggest-cache.json"
             ),
+            team_allowlist=data.get("team_allowlist"),
         )
 
     @staticmethod

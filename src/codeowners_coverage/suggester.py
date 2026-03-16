@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Tuple
 import click
 
 from .config import Config
-from .directory_consolidator import DirectoryConsolidator, Pattern
+from .directory_consolidator import DirectoryConsolidator, FileOwnership, Pattern
 from .git_analyzer import GitHistoryAnalyzer
 from .github_client import GitHubClient
 from .matcher import CodeOwnersPatternMatcher
@@ -97,10 +97,13 @@ class OwnershipSuggester:
         # Step 2: Build contributor -> teams mapping (with cache)
         contributor_teams = self._get_teams_cached(file_contributors)
 
-        # Step 3: Get existing patterns for context
+        # Step 3: Get existing patterns for context and resolve team allowlist
         existing_patterns: Dict[str, List[str]] | None = None
+        allowed_teams: List[str] | None = self.config.team_allowlist
         if self.matcher:
             existing_patterns = self.matcher.pattern_owners
+            if allowed_teams is None:
+                allowed_teams = self.matcher.get_all_teams() or None
 
         # Step 4: Use LLM to suggest ownership (with cache)
         file_suggestions, file_owners = self._get_llm_suggestions_cached(
@@ -109,6 +112,7 @@ class OwnershipSuggester:
             contributor_teams,
             existing_patterns,
             progress_callback,
+            allowed_teams,
         )
 
         # Step 5: Consolidate to directory patterns
@@ -124,7 +128,11 @@ class OwnershipSuggester:
     def _get_contributors_cached(
         self, files: List[str]
     ) -> Dict[str, List[Tuple[str, int]]]:
-        """Get git contributors, using cache for hits."""
+        """Get git contributors, using cache for hits.
+
+        Processes files one at a time so progress is visible and
+        the cache is flushed periodically to survive interrupts.
+        """
         result: Dict[str, List[Tuple[str, int]]] = {}
         uncached: List[str] = []
 
@@ -137,27 +145,51 @@ class OwnershipSuggester:
                     continue
             uncached.append(filepath)
 
-        if uncached:
-            fresh = self.git_analyzer.get_bulk_contributors(uncached)
-            result.update(fresh)
+        cached_count = len(files) - len(uncached)
+        if not uncached:
+            if self.cache:
+                click.echo(
+                    f"   Git history: {len(files)} cached (all)"
+                )
+            return result
+
+        if cached_count > 0:
+            click.echo(
+                f"   Git history: {cached_count} cached, "
+                f"fetching {len(uncached)}..."
+            )
+        else:
+            click.echo(
+                f"   Git history: fetching {len(uncached)} "
+                f"files..."
+            )
+
+        flush_interval = 50
+        for i, filepath in enumerate(uncached, 1):
+            contributors = (
+                self.git_analyzer.get_file_contributors(filepath)
+            )
+            if contributors:
+                result[filepath] = contributors
 
             if self.cache:
-                for filepath in uncached:
-                    self.cache.set_git_contributors(
-                        filepath, fresh.get(filepath, [])
-                    )
-                self.cache.flush_if_dirty()
-
-            cached_count = len(files) - len(uncached)
-            if cached_count > 0:
-                click.echo(
-                    f"   Git history: {cached_count} cached, "
-                    f"{len(uncached)} fetched"
+                self.cache.set_git_contributors(
+                    filepath, contributors
                 )
-        elif self.cache:
-            click.echo(
-                f"   Git history: {len(files)} cached (all)"
-            )
+                if i % flush_interval == 0:
+                    self.cache.flush_if_dirty()
+                    click.echo(
+                        f"   Git history: [{i}/{len(uncached)}]"
+                    )
+
+        # Final flush for the remainder
+        if self.cache:
+            self.cache.flush_if_dirty()
+
+        click.echo(
+            f"   Git history: [{len(uncached)}/{len(uncached)}] "
+            f"done"
+        )
 
         return result
 
@@ -183,9 +215,16 @@ class OwnershipSuggester:
             for email, _ in contributors:
                 all_contributors.add(email)
 
+        click.echo(
+            f"   Team mapping: fetching for "
+            f"{len(all_contributors)} contributors..."
+        )
+
         contributor_teams = self.github_client.build_contributor_team_map(
             all_contributors
         )
+
+        click.echo("   Team mapping: done")
 
         if self.cache:
             self.cache.set_contributor_teams(contributor_teams)
@@ -203,10 +242,11 @@ class OwnershipSuggester:
             [int, int, str, TeamSuggestion], None
         ]
         | None,
-    ) -> tuple[Dict[str, TeamSuggestion], Dict[str, List[str]]]:
+        allowed_teams: List[str] | None = None,
+    ) -> tuple[Dict[str, TeamSuggestion], Dict[str, FileOwnership]]:
         """Run LLM suggestions with per-file caching and progress."""
         file_suggestions: Dict[str, TeamSuggestion] = {}
-        file_owners: Dict[str, List[str]] = {}
+        file_owners: Dict[str, FileOwnership] = {}
 
         total = len(files)
         for idx, filepath in enumerate(files, 1):
@@ -219,7 +259,10 @@ class OwnershipSuggester:
                         cached.confidence >= 0.5
                         and cached.team != "@unknown"
                     ):
-                        file_owners[filepath] = [cached.team]
+                        file_owners[filepath] = FileOwnership(
+                            teams=[cached.team],
+                            suggested_pattern=cached.suggested_pattern,
+                        )
                     continue
 
             contributors = file_contributors.get(filepath, [])
@@ -229,6 +272,7 @@ class OwnershipSuggester:
                 contributors=contributors,
                 contributor_teams=contributor_teams,
                 existing_patterns=existing_patterns,
+                allowed_teams=allowed_teams,
             )
 
             file_suggestions[filepath] = suggestion
@@ -237,7 +281,10 @@ class OwnershipSuggester:
                 suggestion.confidence >= 0.5
                 and suggestion.team != "@unknown"
             ):
-                file_owners[filepath] = [suggestion.team]
+                file_owners[filepath] = FileOwnership(
+                    teams=[suggestion.team],
+                    suggested_pattern=suggestion.suggested_pattern,
+                )
 
             # Persist immediately after each LLM call
             if self.cache:

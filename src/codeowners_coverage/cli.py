@@ -57,20 +57,20 @@ def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
             sys.exit(1)
 
         # Exit with code 2 if baseline can be reduced (positive signal)
-        # Check if any baseline files are now covered
-        baseline_set = set(cast(List[str], result["baseline_files"]))
-        current_uncovered = checker.generate_baseline(file_list)
-        current_uncovered_set = set(current_uncovered)
+        # Check if any baseline entries (literal paths or glob patterns)
+        # no longer match any uncovered files
+        loaded_baseline = checker._load_baseline()
+        baseline_matched = cast(List[str], result["baseline_files"])
+        unused_entries = loaded_baseline.get_unused_entries(baseline_matched)
 
-        if len(baseline_set - current_uncovered_set) > 0:
+        if unused_entries:
             if not output_json:
-                removable_files = sorted(baseline_set - current_uncovered_set)
-                click.echo(f"\n🎉 Great news! {len(removable_files)} files can be removed from the baseline:")
-                for f in removable_files[:10]:  # Show first 10
-                    click.echo(f"  - {f}")
-                if len(removable_files) > 10:
-                    click.echo(f"  ... and {len(removable_files) - 10} more")
-                click.echo("\nThese files now have CODEOWNERS coverage! Update the baseline:")
+                click.echo(f"\n🎉 Great news! {len(unused_entries)} baseline entries can be removed:")
+                for entry in unused_entries[:10]:
+                    click.echo(f"  - {entry}")
+                if len(unused_entries) > 10:
+                    click.echo(f"  ... and {len(unused_entries) - 10} more")
+                click.echo("\nThese entries now have CODEOWNERS coverage! Update the baseline:")
                 click.echo("  codeowners-coverage baseline")
             sys.exit(2)
 
@@ -331,6 +331,21 @@ def suggest(
         except FileNotFoundError:
             click.echo("⚠️  No existing CODEOWNERS file found")
 
+        # Report team allowlist
+        if output_format == "interactive":
+            if cfg.team_allowlist:
+                click.echo(
+                    f"✓ Team allowlist (config): "
+                    f"{len(cfg.team_allowlist)} teams"
+                )
+            elif matcher:
+                teams = matcher.get_all_teams()
+                if teams:
+                    click.echo(
+                        f"✓ Team allowlist (from CODEOWNERS): "
+                        f"{len(teams)} teams"
+                    )
+
         # Create suggester
         suggester = OwnershipSuggester(
             config=cfg,
@@ -506,6 +521,8 @@ def _print_human_readable_result(result: Dict[str, Any]) -> None:
     baseline = result["baseline_files"]
     percentage = result["coverage_percentage"]
 
+    effective_pct = ((total - len(uncovered)) / total * 100) if total > 0 else 100.0
+
     if uncovered:
         click.echo("❌ CODEOWNERS Coverage Check Failed\n")
         click.echo(f"The following {len(uncovered)} files lack CODEOWNERS coverage:")
@@ -513,8 +530,10 @@ def _print_human_readable_result(result: Dict[str, Any]) -> None:
             click.echo(f"  - {f}")
         click.echo("\nPlease add these files to .github/CODEOWNERS with appropriate owners.")
         click.echo("\n💡 Need help? Check the team mapping in the CODEOWNERS file")
-        click.echo(f"\n📊 Current status: {len(baseline)} files in baseline (unchanged)")
     else:
-        click.echo(f"✅ CODEOWNERS Coverage: {percentage:.1f}% ({covered}/{total} files covered)")
-        if baseline:
-            click.echo(f"\n💡 Baseline: {len(baseline)} files still need coverage")
+        click.echo("✅ CODEOWNERS Coverage Check Passed")
+
+    click.echo(f"\n📊 Coverage: {percentage:.1f}% total ({covered}/{total} files covered)")
+    if baseline:
+        click.echo(f"   Excluding baseline: {effective_pct:.1f}% ({total - len(uncovered)}/{total} files)")
+        click.echo(f"   Baseline: {len(baseline)} files still need coverage")

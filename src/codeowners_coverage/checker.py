@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -10,6 +11,39 @@ import pathspec
 
 from .config import Config
 from .matcher import CodeOwnersPatternMatcher
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _is_glob_pattern(entry: str) -> bool:
+    return any(c in entry for c in _GLOB_CHARS)
+
+
+@dataclass
+class BaselineSpec:
+    """Holds baseline entries split into literal paths and glob patterns."""
+
+    literals: Set[str] = field(default_factory=set)
+    glob_patterns: List[str] = field(default_factory=list)
+    glob_spec: pathspec.PathSpec = field(
+        default_factory=lambda: pathspec.PathSpec.from_lines("gitignore", [])
+    )
+
+    def matches(self, filepath: str) -> bool:
+        return filepath in self.literals or self.glob_spec.match_file(filepath)
+
+    def get_unused_entries(self, uncovered_files: List[str]) -> List[str]:
+        """Return baseline entries that match zero uncovered files."""
+        uncovered_set = set(uncovered_files)
+        unused: List[str] = []
+        for lit in sorted(self.literals):
+            if lit not in uncovered_set:
+                unused.append(lit)
+        for pattern in self.glob_patterns:
+            spec = pathspec.PathSpec.from_lines("gitignore", [pattern])
+            if not any(spec.match_file(f) for f in uncovered_set):
+                unused.append(pattern)
+        return unused
 
 
 class CoverageChecker:
@@ -43,27 +77,37 @@ class CoverageChecker:
         # Filter out empty strings
         return [f for f in files if f]
 
-    def _load_baseline(self) -> Set[str]:
+    def _load_baseline(self) -> BaselineSpec:
         """
         Load baseline file of allowed uncovered files.
 
+        Entries without glob metacharacters (*, ?, [) are treated as literal
+        paths for exact matching.  Entries containing glob metacharacters are
+        matched using gitignore-style pattern matching via pathspec.
+
         Returns:
-            Set of file paths that are allowed to be uncovered
+            BaselineSpec with literal paths and compiled glob patterns
         """
         baseline_path = Path(self.config.baseline_path)
 
         if not baseline_path.exists():
-            return set()
+            return BaselineSpec()
 
-        baseline_files = set()
+        literals: Set[str] = set()
+        glob_patterns: List[str] = []
+
         with open(baseline_path) as f:
             for line in f:
                 line = line.strip()
-                # Skip comments and empty lines
-                if line and not line.startswith("#"):
-                    baseline_files.add(line)
+                if not line or line.startswith("#"):
+                    continue
+                if _is_glob_pattern(line):
+                    glob_patterns.append(line)
+                else:
+                    literals.add(line)
 
-        return baseline_files
+        glob_spec = pathspec.PathSpec.from_lines("gitignore", glob_patterns)
+        return BaselineSpec(literals=literals, glob_patterns=glob_patterns, glob_spec=glob_spec)
 
     def check_coverage(self, files: List[str] | None = None) -> Dict[str, object]:
         """
@@ -96,8 +140,8 @@ class CoverageChecker:
         baseline = self._load_baseline()
 
         # Separate new uncovered files from baseline files
-        new_uncovered = [f for f in uncovered if f not in baseline]
-        baseline_files = [f for f in uncovered if f in baseline]
+        new_uncovered = [f for f in uncovered if not baseline.matches(f)]
+        baseline_files = [f for f in uncovered if baseline.matches(f)]
 
         # Calculate coverage
         total_files = len(filtered_files)
@@ -138,11 +182,30 @@ class CoverageChecker:
         """
         Write baseline file.
 
+        Preserves existing glob patterns that still match at least one
+        uncovered file.  Literal paths covered by a preserved glob are
+        omitted to avoid duplication.
+
         Args:
             baseline_files: List of file paths to write to baseline
         """
         baseline_path = Path(self.config.baseline_path)
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = self._load_baseline()
+        uncovered_set = set(baseline_files)
+
+        kept_globs: List[str] = []
+        for pattern in existing.glob_patterns:
+            spec = pathspec.PathSpec.from_lines("gitignore", [pattern])
+            if any(spec.match_file(f) for f in uncovered_set):
+                kept_globs.append(pattern)
+
+        if kept_globs:
+            kept_glob_spec = pathspec.PathSpec.from_lines("gitignore", kept_globs)
+            literal_files = [f for f in baseline_files if not kept_glob_spec.match_file(f)]
+        else:
+            literal_files = list(baseline_files)
 
         with open(baseline_path, "w") as f:
             f.write("# CODEOWNERS Coverage Baseline\n")
@@ -151,7 +214,15 @@ class CoverageChecker:
             f.write("#\n")
             f.write("# Generated by: codeowners-coverage baseline\n")
             f.write("#\n")
+            f.write("# Glob patterns (*, ?, [) are supported for matching groups of files.\n")
+            f.write("# Example: docs/** or *.txt\n")
+            f.write("#\n")
             f.write("\n")
 
-            for filepath in baseline_files:
+            if kept_globs:
+                for pattern in kept_globs:
+                    f.write(f"{pattern}\n")
+                f.write("\n")
+
+            for filepath in literal_files:
                 f.write(f"{filepath}\n")
