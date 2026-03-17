@@ -19,10 +19,11 @@ from .matcher import CodeOwnersPatternMatcher
 from .ollama_matcher import OllamaLLMMatcher, TeamSuggestion
 from .suggest_cache import SuggestCache
 from .suggester import OwnershipSuggester, SuggestionResult
+from . import __version__
 
 
 @click.group()
-@click.version_option(version="0.1.0")
+@click.version_option(version=__version__)
 def cli() -> None:
     """CODEOWNERS coverage checking tool."""
     pass

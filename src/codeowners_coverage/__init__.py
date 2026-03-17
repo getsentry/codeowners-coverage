@@ -1,6 +1,6 @@
 """CODEOWNERS coverage checking tool."""
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .checker import CoverageChecker
 from .config import Config

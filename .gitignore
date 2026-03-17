@@ -2,3 +2,4 @@
 dist
 src/codeowners_coverage.egg-info
 __pycache__
+.mypy_cache
