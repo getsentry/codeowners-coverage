@@ -71,14 +71,15 @@ def check(
                 matcher = CodeOwnersPatternMatcher(cfg.codeowners_path)
                 github_client = GitHubClient(token=token, org=cfg.github_org)
                 teams_with_lines = matcher.get_teams_with_lines()
-                click.echo("🔍 Validating CODEOWNERS teams...")
+                if not output_json:
+                    click.echo("🔍 Validating CODEOWNERS teams...", err=True)
                 team_errors = github_client.validate_teams(teams_with_lines)
             except FileNotFoundError:
                 pass  # CODEOWNERS missing — coverage check will also report it
             except ValueError as e:
                 click.echo(f"⚠️  Team validation skipped: {e}", err=True)
             except PermissionError as e:
-                click.echo(f"⚠️  Team validation skipped: {e}")
+                click.echo(f"⚠️  Team validation skipped: {e}", err=True)
             except Exception as e:
                 click.echo(f"⚠️  Team validation failed: {e}", err=True)
         else:
