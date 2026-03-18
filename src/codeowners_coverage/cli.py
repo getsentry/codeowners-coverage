@@ -14,7 +14,7 @@ from .checker import CoverageChecker
 from .config import Config
 from .directory_consolidator import DirectoryConsolidator
 from .git_analyzer import GitHistoryAnalyzer
-from .github_client import GitHubClient
+from .github_client import GitHubClient, TeamValidationError
 from .matcher import CodeOwnersPatternMatcher
 from .ollama_matcher import OllamaLLMMatcher, TeamSuggestion
 from .suggest_cache import SuggestCache
@@ -33,13 +33,27 @@ def cli() -> None:
 @click.option("--json", "output_json", is_flag=True, help="Output JSON format")
 @click.option("--files", multiple=True, help="Specific files to check")
 @click.option("--config", default=".codeowners-config.yml", help="Config file path")
-def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
+@click.option(
+    "--github-token", envvar="GITHUB_TOKEN",
+    help="GitHub token for team validation (needs read:org scope). "
+    "Auto-provided in GitHub Actions via GITHUB_TOKEN env var.",
+)
+def check(
+    output_json: bool,
+    files: Tuple[str, ...],
+    config: str,
+    github_token: str | None,
+) -> None:
     """
     Check CODEOWNERS coverage.
 
     Validates that all files in the repository have CODEOWNERS coverage.
     Files in the baseline are allowed to be uncovered.
     New uncovered files will cause the check to fail.
+
+    When a GitHub token is provided (or GITHUB_TOKEN env var is set),
+    also validates that every team referenced in CODEOWNERS exists and
+    has at least one member.
     """
     try:
         cfg = Config.load(config)
@@ -48,13 +62,51 @@ def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
         file_list: List[str] | None = list(files) if files else None
         result = checker.check_coverage(file_list)
 
+        # --- Team validation ---
+        team_errors: List[TeamValidationError] = []
+        token = github_token or cfg.github_token
+
+        if token:
+            try:
+                matcher = CodeOwnersPatternMatcher(cfg.codeowners_path)
+                github_client = GitHubClient(token=token, org=cfg.github_org)
+                teams_with_lines = matcher.get_teams_with_lines()
+                click.echo("🔍 Validating CODEOWNERS teams...")
+                team_errors = github_client.validate_teams(teams_with_lines)
+            except FileNotFoundError:
+                pass  # CODEOWNERS missing — coverage check will also report it
+            except ValueError as e:
+                click.echo(f"⚠️  Team validation skipped: {e}", err=True)
+            except PermissionError as e:
+                click.echo(f"⚠️  Team validation skipped: {e}")
+            except Exception as e:
+                click.echo(f"⚠️  Team validation failed: {e}", err=True)
+        else:
+            if not output_json:
+                click.echo(
+                    "ℹ️  Team validation skipped (no GitHub token). "
+                    "Set GITHUB_TOKEN or pass --github-token to enable.",
+                    err=True,
+                )
+
         if output_json:
-            click.echo(json.dumps(result, indent=2))
+            json_result = dict(result)
+            json_result["team_errors"] = [
+                {
+                    "team": e.team,
+                    "line_numbers": e.line_numbers,
+                    "reason": e.reason,
+                }
+                for e in team_errors
+            ]
+            click.echo(json.dumps(json_result, indent=2))
         else:
             _print_human_readable_result(result)
+            if team_errors:
+                _print_team_validation_errors(team_errors)
 
-        # Exit with error if there are new uncovered files
-        if result["uncovered_files"]:
+        # Exit with error if there are new uncovered files or invalid teams
+        if result["uncovered_files"] or team_errors:
             sys.exit(1)
 
         # Exit with code 2 if baseline can be reduced (positive signal)
@@ -512,6 +564,18 @@ def _apply_suggestions(cfg: Config, suggestions: SuggestionResult) -> None:
             f.write(f"{pattern.pattern} {teams_str}\n\n")
 
     click.echo(f"✅ Suggestions applied to {cfg.codeowners_path}")
+
+
+def _print_team_validation_errors(errors: List[TeamValidationError]) -> None:
+    """Print team validation errors in human-readable format."""
+    click.echo(f"\n❌ CODEOWNERS Team Validation Failed\n")
+    click.echo(f"The following {len(errors)} team(s) are invalid:\n")
+    for error in errors:
+        lines_str = ", ".join(str(n) for n in error.line_numbers)
+        line_label = "line" if len(error.line_numbers) == 1 else "lines"
+        click.echo(f"  {error.team} ({line_label}: {lines_str})")
+        click.echo(f"    reason: {error.reason}")
+    click.echo()
 
 
 def _print_human_readable_result(result: Dict[str, Any]) -> None:
