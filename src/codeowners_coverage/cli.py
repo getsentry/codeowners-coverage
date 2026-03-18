@@ -14,6 +14,7 @@ from . import __version__
 
 if TYPE_CHECKING:
     from .config import Config
+    from .github_client import TeamValidationError
     from .ollama_matcher import TeamSuggestion
     from .suggest_cache import SuggestCache
     from .suggester import SuggestionResult
@@ -35,13 +36,28 @@ def cli() -> None:
     is_flag=True,
     help="Don't fail when baseline contains entries that are now covered",
 )
-def check(output_json: bool, files: Tuple[str, ...], config: str, allow_dirty_baseline: bool) -> None:
+@click.option(
+    "--github-token", envvar="GITHUB_TOKEN",
+    help="GitHub token for team validation (needs read:org scope). "
+    "Auto-provided in GitHub Actions via GITHUB_TOKEN env var.",
+)
+def check(
+    output_json: bool,
+    files: Tuple[str, ...],
+    config: str,
+    allow_dirty_baseline: bool,
+    github_token: str | None,
+) -> None:
     """
     Check CODEOWNERS coverage.
 
     Validates that all files in the repository have CODEOWNERS coverage.
     Files in the baseline are allowed to be uncovered.
     New uncovered files will cause the check to fail.
+
+    When a GitHub token is provided (or GITHUB_TOKEN env var is set),
+    also validates that every team referenced in CODEOWNERS exists and
+    has at least one member.
     """
     try:
         from .checker import CoverageChecker
@@ -53,7 +69,36 @@ def check(output_json: bool, files: Tuple[str, ...], config: str, allow_dirty_ba
         file_list: List[str] | None = list(files) if files else None
         result = checker.check_coverage(file_list)
 
-        # Calculate unused baseline entries early
+        # --- Team validation ---
+        team_errors: List[TeamValidationError] = []
+        token = github_token or cfg.github_token
+
+        if token:
+            try:
+                from .github_client import GitHubClient, TeamValidationError as TVE
+                from .matcher import CodeOwnersPatternMatcher
+                codeowners_matcher = CodeOwnersPatternMatcher(cfg.codeowners_path)
+                github_client = GitHubClient(token=token, org=cfg.github_org)
+                teams_with_lines = codeowners_matcher.get_teams_with_lines()
+                click.echo("🔍 Validating CODEOWNERS teams...")
+                team_errors = github_client.validate_teams(teams_with_lines)
+            except FileNotFoundError:
+                pass  # CODEOWNERS missing — coverage check will also report it
+            except ValueError as e:
+                click.echo(f"⚠️  Team validation skipped: {e}", err=True)
+            except PermissionError as e:
+                click.echo(f"⚠️  Team validation skipped: {e}")
+            except Exception as e:
+                click.echo(f"⚠️  Team validation failed: {e}", err=True)
+        else:
+            if not output_json:
+                click.echo(
+                    "ℹ️  Team validation skipped (no GitHub token). "
+                    "Set GITHUB_TOKEN or pass --github-token to enable.",
+                    err=True,
+                )
+
+        # Calculate unused baseline entries
         loaded_baseline = checker._load_baseline()
         baseline_matched = cast(List[str], result["baseline_files"])
         unused_entries = loaded_baseline.get_unused_entries(baseline_matched)
@@ -62,9 +107,19 @@ def check(output_json: bool, files: Tuple[str, ...], config: str, allow_dirty_ba
         if output_json:
             json_output = result.copy()
             json_output["unused_baseline_entries"] = unused_entries
+            json_output["team_errors"] = [
+                {
+                    "team": e.team,
+                    "line_numbers": e.line_numbers,
+                    "reason": e.reason,
+                }
+                for e in team_errors
+            ]
             click.echo(json.dumps(json_output, indent=2))
         else:
             _print_human_readable_result(result)
+            if team_errors:
+                _print_team_validation_errors(team_errors)
 
             # Print unused entries message in human-readable mode
             if unused_entries:
@@ -76,8 +131,8 @@ def check(output_json: bool, files: Tuple[str, ...], config: str, allow_dirty_ba
                 click.echo("\nThese entries now have CODEOWNERS coverage! Update the baseline:")
                 click.echo("  codeowners-coverage baseline")
 
-        # Exit with error if there are new uncovered files
-        if result["uncovered_files"]:
+        # Exit with error if there are new uncovered files or invalid teams
+        if result["uncovered_files"] or team_errors:
             sys.exit(1)
 
         # Exit with code 2 if baseline can be reduced (positive signal)
@@ -539,6 +594,18 @@ def _apply_suggestions(cfg: Config, suggestions: SuggestionResult) -> None:
             f.write(f"{pattern.pattern} {teams_str}\n\n")
 
     click.echo(f"✅ Suggestions applied to {cfg.codeowners_path}")
+
+
+def _print_team_validation_errors(errors: List[TeamValidationError]) -> None:
+    """Print team validation errors in human-readable format."""
+    click.echo(f"\n❌ CODEOWNERS Team Validation Failed\n")
+    click.echo(f"The following {len(errors)} team(s) are invalid:\n")
+    for error in errors:
+        lines_str = ", ".join(str(n) for n in error.line_numbers)
+        line_label = "line" if len(error.line_numbers) == 1 else "lines"
+        click.echo(f"  {error.team} ({line_label}: {lines_str})")
+        click.echo(f"    reason: {error.reason}")
+    click.echo()
 
 
 def _print_human_readable_result(result: Dict[str, Any]) -> None:

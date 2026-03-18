@@ -136,6 +136,33 @@ class CodeOwnersPatternMatcher:
             teams.update(owners)
         return sorted(teams)
 
+    def get_teams_with_lines(self) -> Dict[str, List[int]]:
+        """
+        Get all owners/teams and the line numbers where they appear.
+
+        Returns:
+            Dict mapping owner (e.g. @org/team) to list of 1-based line numbers
+        """
+        team_lines: Dict[str, List[int]] = {}
+        codeowners_file = Path(self.codeowners_path)
+
+        if not codeowners_file.exists():
+            return team_lines
+
+        with open(codeowners_file) as f:
+            for lineno, line in enumerate(f, 1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    for owner in parts[1:]:
+                        if owner not in team_lines:
+                            team_lines[owner] = []
+                        team_lines[owner].append(lineno)
+
+        return team_lines
+
     def get_owners_for_file(self, filepath: str) -> List[str] | None:
         """
         Get owners for a specific file.

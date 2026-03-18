@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import re
 import subprocess
-from typing import Dict, List, Set
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Tuple
 
 import requests
+
+
+@dataclass
+class TeamValidationError:
+    """A team referenced in CODEOWNERS that failed validation."""
+
+    team: str  # e.g. @getsentry/enterprise
+    line_numbers: List[int] = field(default_factory=list)
+    reason: str = ""
 
 
 class GitHubClient:
@@ -160,6 +170,84 @@ class GitHubClient:
         user_data = response.json()
         # Email might not be public
         return user_data.get("email") or f"{username}@users.noreply.github.com"
+
+    def validate_teams(
+        self,
+        teams_with_lines: Dict[str, List[int]],
+    ) -> List[TeamValidationError]:
+        """
+        Validate that all @org/team entries in CODEOWNERS exist.
+
+        Only validates entries in @org/team format (skips individual @usernames).
+        Fetches the full team list upfront, then checks each slug against it.
+
+        Note: Secret teams not visible to the token will appear as not found.
+        The token needs read:org scope (and SSO authorization if applicable).
+
+        Args:
+            teams_with_lines: Mapping of owner string → line numbers (from matcher)
+
+        Returns:
+            List of TeamValidationError for any teams not found
+        """
+        errors: List[TeamValidationError] = []
+
+        org_teams = {
+            owner: lines
+            for owner, lines in teams_with_lines.items()
+            if "/" in owner.lstrip("@")
+        }
+        if not org_teams:
+            return errors
+
+        visible_slugs = self._list_visible_team_slugs()
+
+        for owner, line_numbers in sorted(org_teams.items()):
+            _, team_slug = owner.lstrip("@").split("/", 1)
+
+            if team_slug not in visible_slugs:
+                errors.append(
+                    TeamValidationError(
+                        team=owner,
+                        line_numbers=line_numbers,
+                        reason="team not found in organization",
+                    )
+                )
+
+        return errors
+
+    def _list_visible_team_slugs(self) -> Set[str]:
+        """
+        Fetch all team slugs visible to the authenticated token.
+
+        Includes public teams and private/secret teams the token has access to.
+        Uses pagination to retrieve all teams.
+        """
+        headers = {
+            "Authorization": f"token {self.token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+
+        slugs: Set[str] = set()
+        page = 1
+        while True:
+            url = f"{self.base_url}/orgs/{self.org}/teams"
+            response = requests.get(url, headers=headers, params={"per_page": 100, "page": page})
+            if response.status_code == 403:
+                raise PermissionError(
+                    "token lacks read:org scope — skipping team validation"
+                )
+            response.raise_for_status()
+            teams = response.json()
+            if not teams:
+                break
+            for team in teams:
+                slugs.add(team["slug"])
+            if len(teams) < 100:
+                break
+            page += 1
+
+        return slugs
 
     def build_contributor_team_map(
         self,
