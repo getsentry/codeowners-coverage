@@ -87,7 +87,7 @@ def check(
             except ValueError as e:
                 click.echo(f"⚠️  Team validation skipped: {e}", err=True)
             except PermissionError as e:
-                click.echo(f"⚠️  Team validation skipped: {e}")
+                click.echo(f"⚠️  Team validation skipped: {e}", err=True)
             except Exception as e:
                 click.echo(f"⚠️  Team validation failed: {e}", err=True)
         else:
