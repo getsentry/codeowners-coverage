@@ -85,12 +85,13 @@ class GitHubClient:
         """
         Fetch all teams in organization.
 
-        API call: GET /orgs/{org}/teams
+        API call: GET /orgs/{org}/teams (paginated)
 
         Returns:
             List of team slugs
 
         Raises:
+            PermissionError: If token lacks read:org scope (403)
             requests.HTTPError: If API call fails
         """
         if self._teams_list is not None:
@@ -101,12 +102,27 @@ class GitHubClient:
             "Accept": "application/vnd.github.v3+json",
         }
 
-        url = f"{self.base_url}/orgs/{self.org}/teams"
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+        slugs: List[str] = []
+        page = 1
+        while True:
+            url = f"{self.base_url}/orgs/{self.org}/teams"
+            response = requests.get(
+                url, headers=headers, params={"per_page": 100, "page": page}
+            )
+            if response.status_code == 403:
+                raise PermissionError(
+                    "token lacks read:org scope — skipping team validation"
+                )
+            response.raise_for_status()
+            teams = response.json()
+            if not teams:
+                break
+            slugs.extend(team["slug"] for team in teams)
+            if len(teams) < 100:
+                break
+            page += 1
 
-        teams = response.json()
-        self._teams_list = [team["slug"] for team in teams]
+        self._teams_list = slugs
         return self._teams_list
 
     def get_team_members(self, team_slug: str) -> List[str]:
@@ -200,7 +216,7 @@ class GitHubClient:
         if not org_teams:
             return errors
 
-        visible_slugs = self._list_visible_team_slugs()
+        visible_slugs = set(self.list_teams())
 
         for owner, line_numbers in sorted(org_teams.items()):
             _, team_slug = owner.lstrip("@").split("/", 1)
@@ -215,39 +231,6 @@ class GitHubClient:
                 )
 
         return errors
-
-    def _list_visible_team_slugs(self) -> Set[str]:
-        """
-        Fetch all team slugs visible to the authenticated token.
-
-        Includes public teams and private/secret teams the token has access to.
-        Uses pagination to retrieve all teams.
-        """
-        headers = {
-            "Authorization": f"token {self.token}",
-            "Accept": "application/vnd.github.v3+json",
-        }
-
-        slugs: Set[str] = set()
-        page = 1
-        while True:
-            url = f"{self.base_url}/orgs/{self.org}/teams"
-            response = requests.get(url, headers=headers, params={"per_page": 100, "page": page})
-            if response.status_code == 403:
-                raise PermissionError(
-                    "token lacks read:org scope — skipping team validation"
-                )
-            response.raise_for_status()
-            teams = response.json()
-            if not teams:
-                break
-            for team in teams:
-                slugs.add(team["slug"])
-            if len(teams) < 100:
-                break
-            page += 1
-
-        return slugs
 
     def build_contributor_team_map(
         self,
