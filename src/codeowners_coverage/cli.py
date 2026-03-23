@@ -321,6 +321,9 @@ def suggest(
                 f"✓ Connected to Ollama "
                 f"(model: {cfg.ollama_model})"
             )
+        except ImportError as e:
+            click.echo(f"❌ {e}", err=True)
+            sys.exit(1)
         except Exception as e:
             click.echo(
                 f"❌ Failed to connect to Ollama: {e}",
