@@ -36,7 +36,11 @@ just ollama-setup  # Downloads and configures Ollama model
 ## Installation
 
 ```bash
+# Core (check + baseline commands)
 pip install codeowners-coverage
+
+# With AI-powered suggestions (requires Ollama)
+pip install codeowners-coverage[suggest]
 ```
 
 ## Usage
@@ -54,6 +58,8 @@ codeowners-coverage baseline
 ```
 
 ### Suggest CODEOWNERS entries (AI-powered)
+
+> Requires the `[suggest]` extra: `pip install codeowners-coverage[suggest]`
 
 Use local LLM to intelligently suggest team ownership based on git history.
 
@@ -230,8 +236,8 @@ just release
 ### Manual commands
 
 ```bash
-# Install in development mode
-uv pip install -e ".[dev]"
+# Install in development mode (all features)
+uv pip install -e ".[dev,suggest]"
 
 # Run tests
 pytest tests/ -v

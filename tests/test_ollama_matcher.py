@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codeowners_coverage import ollama_matcher
 from codeowners_coverage.ollama_matcher import OllamaLLMMatcher
+
+_mock_ollama_module = MagicMock()
+_mock_ollama_module.list.return_value = []
 
 
 @pytest.fixture
 def mock_ollama() -> None:
     """Mock Ollama availability check."""
-    with patch("ollama.list", return_value=[]):
+    with patch.object(ollama_matcher, "ollama", _mock_ollama_module):
         yield
 
 
@@ -91,7 +95,7 @@ def test_match_file_to_team(mock_ollama: None) -> None:
         }
     }
 
-    with patch("ollama.chat", return_value=mock_response):
+    with patch.object(_mock_ollama_module, "chat", return_value=mock_response):
         suggestion = matcher.match_file_to_team(
             filepath="src/components/Button.tsx",
             contributors=[("alice@example.com", 5)],
@@ -292,7 +296,7 @@ def test_match_file_passes_allowlist(mock_ollama: None) -> None:
         }
     }
 
-    with patch("ollama.chat", return_value=mock_response):
+    with patch.object(_mock_ollama_module, "chat", return_value=mock_response):
         suggestion = matcher.match_file_to_team(
             filepath="src/components/Button.tsx",
             contributors=[("alice@example.com", 5)],
