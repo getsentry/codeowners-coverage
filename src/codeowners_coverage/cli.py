@@ -410,6 +410,8 @@ def _setup_cache(
     files: List[str],
 ) -> SuggestCache | None:
     """Load or initialize the suggest cache."""
+    from .suggest_cache import SuggestCache
+
     if no_cache:
         click.echo("   Cache: disabled (--no-cache)")
         return None
