@@ -6,7 +6,7 @@ default:
 
 # Install package in development mode
 install:
-    uv pip install -e ".[dev]"
+    uv pip install -e ".[dev,suggest]"
 
 # Run all tests
 test:

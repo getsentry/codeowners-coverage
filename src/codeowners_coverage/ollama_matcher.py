@@ -6,7 +6,10 @@ import json
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
-import ollama
+try:
+    import ollama
+except ImportError:
+    ollama = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -38,10 +41,15 @@ class OllamaLLMMatcher:
         Raises:
             Exception: If unable to connect to Ollama
         """
+        if ollama is None:
+            raise ImportError(
+                "The 'ollama' package is required for the suggest command. "
+                "Install it with: pip install codeowners-coverage[suggest]"
+            )
+
         self.model = model
         self.base_url = base_url
 
-        # Verify Ollama is available
         try:
             ollama.list()
         except Exception as e:

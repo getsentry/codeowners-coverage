@@ -6,20 +6,17 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple, cast
 
 import click
 
-from .checker import CoverageChecker
-from .config import Config
-from .directory_consolidator import DirectoryConsolidator
-from .git_analyzer import GitHistoryAnalyzer
-from .github_client import GitHubClient
-from .matcher import CodeOwnersPatternMatcher
-from .ollama_matcher import OllamaLLMMatcher, TeamSuggestion
-from .suggest_cache import SuggestCache
-from .suggester import OwnershipSuggester, SuggestionResult
 from . import __version__
+
+if TYPE_CHECKING:
+    from .config import Config
+    from .ollama_matcher import TeamSuggestion
+    from .suggest_cache import SuggestCache
+    from .suggester import SuggestionResult
 
 
 @click.group()
@@ -42,6 +39,9 @@ def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
     New uncovered files will cause the check to fail.
     """
     try:
+        from .checker import CoverageChecker
+        from .config import Config
+
         cfg = Config.load(config)
         checker = CoverageChecker(cfg)
 
@@ -95,6 +95,9 @@ def baseline(config: str, files: Tuple[str, ...]) -> None:
     allowing existing gaps.
     """
     try:
+        from .checker import CoverageChecker
+        from .config import Config
+
         cfg = Config.load(config)
         checker = CoverageChecker(cfg)
 
@@ -198,6 +201,16 @@ def suggest(
     Requires Ollama to be installed and running.
     """
     try:
+        from .checker import CoverageChecker
+        from .config import Config
+        from .directory_consolidator import DirectoryConsolidator
+        from .git_analyzer import GitHistoryAnalyzer
+        from .github_client import GitHubClient
+        from .matcher import CodeOwnersPatternMatcher
+        from .ollama_matcher import OllamaLLMMatcher, TeamSuggestion
+        from .suggest_cache import SuggestCache
+        from .suggester import OwnershipSuggester, SuggestionResult
+
         # Load config
         cfg = Config.load(config)
 
@@ -308,6 +321,9 @@ def suggest(
                 f"✓ Connected to Ollama "
                 f"(model: {cfg.ollama_model})"
             )
+        except ImportError as e:
+            click.echo(f"❌ {e}", err=True)
+            sys.exit(1)
         except Exception as e:
             click.echo(
                 f"❌ Failed to connect to Ollama: {e}",
@@ -397,6 +413,8 @@ def _setup_cache(
     files: List[str],
 ) -> SuggestCache | None:
     """Load or initialize the suggest cache."""
+    from .suggest_cache import SuggestCache
+
     if no_cache:
         click.echo("   Cache: disabled (--no-cache)")
         return None
