@@ -30,7 +30,12 @@ def cli() -> None:
 @click.option("--json", "output_json", is_flag=True, help="Output JSON format")
 @click.option("--files", multiple=True, help="Specific files to check")
 @click.option("--config", default=".codeowners-config.yml", help="Config file path")
-def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
+@click.option(
+    "--allow-dirty-baseline",
+    is_flag=True,
+    help="Don't fail when baseline contains entries that are now covered",
+)
+def check(output_json: bool, files: Tuple[str, ...], config: str, allow_dirty_baseline: bool) -> None:
     """
     Check CODEOWNERS coverage.
 
@@ -48,24 +53,21 @@ def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
         file_list: List[str] | None = list(files) if files else None
         result = checker.check_coverage(file_list)
 
-        if output_json:
-            click.echo(json.dumps(result, indent=2))
-        else:
-            _print_human_readable_result(result)
-
-        # Exit with error if there are new uncovered files
-        if result["uncovered_files"]:
-            sys.exit(1)
-
-        # Exit with code 2 if baseline can be reduced (positive signal)
-        # Check if any baseline entries (literal paths or glob patterns)
-        # no longer match any uncovered files
+        # Calculate unused baseline entries early
         loaded_baseline = checker._load_baseline()
         baseline_matched = cast(List[str], result["baseline_files"])
         unused_entries = loaded_baseline.get_unused_entries(baseline_matched)
 
-        if unused_entries:
-            if not output_json:
+        # Output results
+        if output_json:
+            json_output = result.copy()
+            json_output["unused_baseline_entries"] = unused_entries
+            click.echo(json.dumps(json_output, indent=2))
+        else:
+            _print_human_readable_result(result)
+
+            # Print unused entries message in human-readable mode
+            if unused_entries:
                 click.echo(f"\n🎉 Great news! {len(unused_entries)} baseline entries can be removed:")
                 for entry in unused_entries[:10]:
                     click.echo(f"  - {entry}")
@@ -73,6 +75,14 @@ def check(output_json: bool, files: Tuple[str, ...], config: str) -> None:
                     click.echo(f"  ... and {len(unused_entries) - 10} more")
                 click.echo("\nThese entries now have CODEOWNERS coverage! Update the baseline:")
                 click.echo("  codeowners-coverage baseline")
+
+        # Exit with error if there are new uncovered files
+        if result["uncovered_files"]:
+            sys.exit(1)
+
+        # Exit with code 2 if baseline can be reduced (positive signal)
+        # Only exit with code 2 if baseline is dirty AND flag is not set
+        if unused_entries and not allow_dirty_baseline:
             sys.exit(2)
 
     except FileNotFoundError as e:
@@ -207,9 +217,8 @@ def suggest(
         from .git_analyzer import GitHistoryAnalyzer
         from .github_client import GitHubClient
         from .matcher import CodeOwnersPatternMatcher
-        from .ollama_matcher import OllamaLLMMatcher, TeamSuggestion
-        from .suggest_cache import SuggestCache
-        from .suggester import OwnershipSuggester, SuggestionResult
+        from .ollama_matcher import OllamaLLMMatcher
+        from .suggester import OwnershipSuggester
 
         # Load config
         cfg = Config.load(config)
