@@ -125,11 +125,26 @@ def _mock_teams_list_response(slugs: list[str]) -> MagicMock:
     return response
 
 
+def _mock_team_members_response(members: list[dict]) -> MagicMock:
+    """Build a mock response for GET .../teams/{slug}/members."""
+    response = MagicMock()
+    response.status_code = 200
+    response.raise_for_status = MagicMock()
+    response.json.return_value = members
+    return response
+
+
 def test_validate_teams_all_valid() -> None:
-    """Test validate_teams when all teams exist."""
+    """Test validate_teams when all teams exist and have members."""
     client = _make_client()
 
-    with patch("requests.get", return_value=_mock_teams_list_response(["backend"])):
+    with patch(
+        "requests.get",
+        side_effect=[
+            _mock_teams_list_response(["backend"]),
+            _mock_team_members_response([{"login": "alice"}]),
+        ],
+    ):
         errors = client.validate_teams({"@myorg/backend": [5]})
 
     assert errors == []
@@ -163,7 +178,13 @@ def test_validate_teams_multiple_errors() -> None:
     """Test validate_teams with a mix of valid and invalid teams."""
     client = _make_client()
 
-    with patch("requests.get", return_value=_mock_teams_list_response(["good-team"])):
+    with patch(
+        "requests.get",
+        side_effect=[
+            _mock_teams_list_response(["good-team"]),
+            _mock_team_members_response([{"login": "alice"}]),
+        ],
+    ):
         errors = client.validate_teams({
             "@myorg/good-team": [1],
             "@myorg/bad-team": [53],
@@ -171,6 +192,24 @@ def test_validate_teams_multiple_errors() -> None:
 
     assert len(errors) == 1
     assert errors[0].team == "@myorg/bad-team"
+
+
+def test_validate_teams_empty_team() -> None:
+    """Test validate_teams when a team exists but has no members."""
+    client = _make_client()
+
+    with patch(
+        "requests.get",
+        side_effect=[
+            _mock_teams_list_response(["empty-team"]),
+            _mock_team_members_response([]),
+        ],
+    ):
+        errors = client.validate_teams({"@myorg/empty-team": [10]})
+
+    assert len(errors) == 1
+    assert errors[0].team == "@myorg/empty-team"
+    assert "no members" in errors[0].reason
 
 
 def test_validate_teams_pagination() -> None:
@@ -189,7 +228,14 @@ def test_validate_teams_pagination() -> None:
     page2.raise_for_status = MagicMock()
     page2.json.return_value = [{"slug": "my-team"}]
 
-    with patch("requests.get", side_effect=[page1, page2]):
+    with patch(
+        "requests.get",
+        side_effect=[
+            page1,
+            page2,
+            _mock_team_members_response([{"login": "someone"}]),
+        ],
+    ):
         errors = client.validate_teams({"@myorg/my-team": [1]})
 
     assert errors == []

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set
 
 import requests
 
@@ -187,15 +187,32 @@ class GitHubClient:
         # Email might not be public
         return user_data.get("email") or f"{username}@users.noreply.github.com"
 
+    def _team_has_members(self, team_slug: str) -> bool:
+        """
+        Return True if the team has at least one member.
+
+        Uses GET /orgs/{org}/teams/{team_slug}/members with per_page=1.
+        """
+        headers = {
+            "Authorization": f"token {self.token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        url = f"{self.base_url}/orgs/{self.org}/teams/{team_slug}/members"
+        response = requests.get(url, headers=headers, params={"per_page": 1})
+        response.raise_for_status()
+        members = response.json()
+        return len(members) > 0
+
     def validate_teams(
         self,
         teams_with_lines: Dict[str, List[int]],
     ) -> List[TeamValidationError]:
         """
-        Validate that all @org/team entries in CODEOWNERS exist.
+        Validate that all @org/team entries in CODEOWNERS exist and are non-empty.
 
         Only validates entries in @org/team format (skips individual @usernames).
         Fetches the full team list upfront, then checks each slug against it.
+        Teams that exist but have no members are reported as errors.
 
         Note: Secret teams not visible to the token will appear as not found.
         The token needs read:org scope (and SSO authorization if applicable).
@@ -204,7 +221,7 @@ class GitHubClient:
             teams_with_lines: Mapping of owner string → line numbers (from matcher)
 
         Returns:
-            List of TeamValidationError for any teams not found
+            List of TeamValidationError for teams not found or with no members
         """
         errors: List[TeamValidationError] = []
 
@@ -227,6 +244,16 @@ class GitHubClient:
                         team=owner,
                         line_numbers=line_numbers,
                         reason="team not found in organization",
+                    )
+                )
+                continue
+
+            if not self._team_has_members(team_slug):
+                errors.append(
+                    TeamValidationError(
+                        team=owner,
+                        line_numbers=line_numbers,
+                        reason="team has no members",
                     )
                 )
 
