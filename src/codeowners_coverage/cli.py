@@ -80,7 +80,7 @@ def check(
                 codeowners_matcher = CodeOwnersPatternMatcher(cfg.codeowners_path)
                 github_client = GitHubClient(token=token, org=cfg.github_org)
                 teams_with_lines = codeowners_matcher.get_teams_with_lines()
-                click.echo("🔍 Validating CODEOWNERS teams...")
+                click.echo("🔍 Validating CODEOWNERS teams...", err=True)
                 team_errors = github_client.validate_teams(teams_with_lines)
             except FileNotFoundError:
                 pass  # CODEOWNERS missing — coverage check will also report it
