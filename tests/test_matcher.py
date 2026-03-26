@@ -201,3 +201,51 @@ def test_codeowners_with_only_comments() -> None:
     assert len(matcher.patterns) == 0
 
     Path(temp_path).unlink()
+
+
+def test_get_teams_with_lines_basic(sample_codeowners: Path) -> None:
+    """Test that get_teams_with_lines returns correct teams and line numbers."""
+    matcher = CodeOwnersPatternMatcher(str(sample_codeowners))
+    result = matcher.get_teams_with_lines()
+
+    # sample_codeowners has patterns on lines 2-9 (line 1 is a comment)
+    assert "@python-team" in result
+    assert "@docs-team" in result
+    assert "@frontend-team" in result
+
+    # @docs-team appears on two lines (docs/* and *.md)
+    assert len(result["@docs-team"]) == 2
+
+
+def test_get_teams_with_lines_multi_owner() -> None:
+    """Test line tracking when a single pattern has multiple owners."""
+    content = "src/ @backend @sre\ndocs/ @docs\n"
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_CODEOWNERS") as f:
+        f.write(content)
+        temp_path = f.name
+
+    matcher = CodeOwnersPatternMatcher(temp_path)
+    result = matcher.get_teams_with_lines()
+
+    assert result["@backend"] == [1]
+    assert result["@sre"] == [1]
+    assert result["@docs"] == [2]
+
+    Path(temp_path).unlink()
+
+
+def test_get_teams_with_lines_skips_comments() -> None:
+    """Test that comments and empty lines are not included."""
+    content = "# @not-a-team\n\n*.py @real-team\n"
+    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_CODEOWNERS") as f:
+        f.write(content)
+        temp_path = f.name
+
+    matcher = CodeOwnersPatternMatcher(temp_path)
+    result = matcher.get_teams_with_lines()
+
+    assert "@not-a-team" not in result
+    assert "@real-team" in result
+    assert result["@real-team"] == [3]
+
+    Path(temp_path).unlink()

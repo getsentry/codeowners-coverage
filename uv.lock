@@ -175,11 +175,12 @@ wheels = [
 
 [[package]]
 name = "codeowners-coverage"
-version = "0.3.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "click", version = "8.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "ollama" },
     { name = "pathspec" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -194,15 +195,12 @@ dev = [
     { name = "types-pyyaml" },
     { name = "types-requests" },
 ]
-suggest = [
-    { name = "ollama" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
-    { name = "ollama", marker = "extra == 'suggest'", specifier = ">=0.3.0" },
+    { name = "ollama", specifier = ">=0.3.0" },
     { name = "pathspec", specifier = ">=0.12.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
@@ -212,7 +210,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "types-requests", marker = "extra == 'dev'", specifier = ">=2.31.0" },
 ]
-provides-extras = ["suggest", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "colorama"
